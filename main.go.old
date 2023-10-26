@@ -1,0 +1,195 @@
+package main
+
+//lint:file-ignore U1000 Ignore all unused code, it's generated
+
+import (
+	"bufio"
+	"fmt"
+	"image"
+	"image/color"
+	_ "image/png"
+	"math"
+	"os"
+
+	rl "github.com/gen2brain/raylib-go/raylib"
+)
+
+const (
+	screen_width  int32 = 1000
+	screen_height int32 = 1000
+	N_ROWS        int32 = 160 // game width instead of screen
+	N_COLS        int32 = 160
+)
+
+var fullscreen = false
+var vsync = true
+
+// index of multi. dim. array
+func mid(row, col, factor int32) int32 {
+	return row*factor + col
+}
+func dim(ix, factor int32) (int32, int32) {
+	return ix / factor, ix % factor
+}
+
+var memory = make([][]color.RGBA, int(N_ROWS))
+var old_memory = make([][]color.RGBA, int(N_ROWS))
+
+var cameraX, cameraY float64 = 0, 0
+
+func main() {
+	init_mdimension(&memory, int(N_COLS))
+	init_mdimension(&old_memory, int(N_COLS))
+	mt_sliceFill(&memory, color.RGBA{0, 0, 0, 255})
+	mt_sliceFill(&old_memory, color.RGBA{0, 0, 0, 255})
+
+	tilemap1 := load_tilemap("./tilemap.bin")
+	tileset1 := load_tileset("./tileset.png", 16)
+	var flags uint32 = 0
+	if fullscreen {
+		flags |= rl.FlagFullscreenMode
+	}
+	if vsync {
+		flags |= rl.FlagVsyncHint
+	}
+
+	rl.SetConfigFlags(flags)
+	rl.InitWindow(screen_width, screen_height, "Alphaville")
+	defer rl.CloseWindow()
+	rl.SetTargetFPS(60)
+
+	for !rl.WindowShouldClose() {
+		rl.BeginDrawing()
+
+		rl.ClearBackground(color.RGBA{17, 17, 17, 255})
+
+		// for i := range memory {
+		// 	memory[i] = color.RGBA{uint8(rand.Intn(256)), uint8(rand.Intn(256)), uint8(rand.Intn(256)), uint8(rand.Intn(256))}
+		// }
+		draw_map(tilemap1, tileset1)
+		draw_memory(pixel_ratio(screen_width))
+		rl.EndDrawing()
+	}
+}
+
+func pixel_ratio(width int32) int32 {
+	return int32(math.Ceil(float64(width) / float64(N_ROWS)))
+}
+
+type tileset struct {
+	image_set  [][]color.RGBA
+	tile_scale int32
+}
+
+func load_tileset(file_name string, tile_scale int32) tileset {
+	// Open the file for reading
+	file, err := os.Open(file_name)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+
+	// Decode the image
+	img, _, err := image.Decode(file)
+	if err != nil {
+		fmt.Printf("image: %v\n", file_name)
+		panic(err)
+	}
+
+	i_width, i_height := img.Bounds().Dx(), img.Bounds().Dy()
+
+	it_x, it_y := i_width/int(tile_scale), i_height/int(tile_scale)
+	fmt.Printf("%v %v\n", it_x, it_y)
+	tile_count := (i_width / int(tile_scale)) * (i_height / int(tile_scale))
+
+	var image_set = make([][]color.RGBA, tile_count)
+	init_mdimension(&image_set, int(tile_scale)*int(tile_scale))
+
+	for ix := range image_set {
+		for iy := range image_set[ix] {
+			row, col := dim(int32(iy), tile_scale)
+			itr_x, itr_y := dim(int32(ix), int32(it_x)-1)
+			rowp := row + itr_x*tile_scale
+			colp := col + itr_y*tile_scale
+			r, g, b, a := img.At(int(rowp), int(colp)).RGBA()
+			pixel := color.RGBA{uint8(r), uint8(g), uint8(b), uint8(a)}
+			//fmt.Printf("%v %v (%v %v) %v \n", ix, iy, row, col, pixel)
+			image_set[ix][mid(row, col, tile_scale)] = pixel
+		}
+	}
+
+	return tileset{image_set, tile_scale}
+}
+
+type tilemap struct {
+	tmap   []byte
+	width  int32
+	height int32
+}
+
+func load_tilemap(file_path string) tilemap {
+	file, err := os.Open(file_path)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+	width, err := reader.ReadByte()
+	if err != nil {
+		panic(err)
+	}
+	height, err := reader.ReadByte()
+	if err != nil {
+		panic(err)
+	}
+	var size = int(width) * int(height) // converting because this can be bigger than uint8
+	var tmap = make([]byte, size)
+
+	i := 0
+	for {
+		// Read a byte (uint8) from the file
+		byteValue, err := reader.ReadByte()
+		if err != nil {
+			break // Reached the end of the file
+		}
+		tmap[i] = byteValue
+		i++
+	}
+
+	return tilemap{tmap, int32(width), int32(height)}
+}
+
+func draw_map(tmap tilemap, tset tileset) {
+	lenght := tmap.width * tset.tile_scale
+	if cameraX == 0 && cameraY == 0 {
+		cameraX = float64(lenght)/2 - float64(N_ROWS)/2
+		cameraY = float64(lenght)/2 - float64(N_COLS)/2
+	}
+	tilebytile := tset.tile_scale * tset.tile_scale
+
+	for ix := range memory {
+		row, col := dim(int32(ix), N_ROWS)
+		row += int32(cameraX)
+		col += int32(cameraY)
+		map_row, map_col := row/tset.tile_scale, col/tset.tile_scale
+		tileset_index := tmap.tmap[mid(map_col, map_row, tmap.width-1)]
+		tileset_index = 44
+		tileset_indv := mid(row, col, tset.tile_scale) % tilebytile
+		if row < 0 || row > lenght-1 || col < 0 || col > lenght-1 {
+			memory[ix] = color.RGBA{0, 0, 0, 255}
+		} else {
+			memory[ix] = tset.image_set[tileset_index][tileset_indv]
+		}
+	}
+}
+
+func draw_memory(p_ratio int32) {
+
+	for ix, pixel := range memory {
+		if old_memory[ix] != pixel {
+			row, col := dim(int32(ix), N_ROWS)
+			rl.DrawRectangle(row*p_ratio, col*p_ratio, p_ratio, p_ratio, pixel)
+		}
+	}
+}
